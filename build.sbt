@@ -15,13 +15,7 @@ def ifAtLeast(scalaBinaryVersion: String, atLeastVersion: String)(options: Strin
   else Seq.empty
 }
 
-lazy val scalatestSetting = Def.setting(
-  if (scalaVersion.value == "2.13.0-M5") {
-    Seq("org.scalatest" %%% "scalatest" % "3.0.6-SNAP4" % "test")
-  } else {
-    Seq("org.scalatest" %%% "scalatest" % "3.0.6-SNAP5" % "test")
-  }
-)
+lazy val scalatest = Def.setting("org.scalatest" %%% "scalatest" % "3.0.8-RC2" % "test")
 
 lazy val nativeCommonSettings = Def.settings(
   // https://github.com/scalatest/scalatest/issues/1112#issuecomment-366856502
@@ -39,11 +33,19 @@ lazy val commonSettings = Seq(
     "-language:higherKinds",
     "-language:implicitConversions"
   ),
+  scalacOptions ++= {
+    CrossVersion.partialVersion(scalaVersion.value) match {
+      case Some((2, v)) if v >= 13 =>
+        Seq("-Ymacro-annotations")
+      case _ =>
+        Nil
+    }
+  },
   scalacOptions in (Compile, doc) ~= { _ filterNot { o => o == "-Ywarn-unused-import" || o == "-Xfatal-warnings" } },
   scalacOptions in (Compile, console) ~= { _ filterNot { o => o == "-Ywarn-unused-import" || o == "-Xfatal-warnings" } },
   scalacOptions in (Test, console) := (scalacOptions in (Compile, console)).value,
   scalaVersion := Scala211,
-  crossScalaVersions := Seq("2.10.7", Scala211, "2.12.7", "2.13.0-M5"),
+  crossScalaVersions := Seq(Scala211, "2.12.8", "2.13.0-RC1"),
   resolvers ++= Seq(
     Resolver.sonatypeRepo("releases"),
     Resolver.sonatypeRepo("snapshots")
@@ -101,6 +103,7 @@ lazy val commonSettings = Seq(
     inquireVersions,
     runClean,
     runTest,
+    releaseStepCommandAndRemaining("test:doc"),
     setReleaseVersion,
     commitReleaseVersion,
     tagRelease,
@@ -112,49 +115,57 @@ lazy val commonSettings = Seq(
   ),
   wartremoverErrors in (Test, compile) ++= Seq(
     Wart.ExplicitImplicitTypes,
-    Wart.ImplicitConversion)
-) ++ Seq(Compile, Test).map{ scope =>
-  scalacOptions in (scope, compile) := {
+    Wart.ImplicitConversion),
+  // Disable scaladoc on 2.13 until RC1 due to https://github.com/scala/bug/issues/11045
+  sources in (Test, doc) := {
     CrossVersion.partialVersion(scalaVersion.value) match {
       case Some((2, v)) if v >= 13 =>
-        (scalacOptions in (scope, compile)).value :+ "-Ymacro-annotations"
+        Nil
       case _ =>
-        (scalacOptions in (scope, compile)).value
+        (sources in (Test, doc)).value
     }
   }
-}
+)
 
 lazy val root = project.in(file("."))
   .settings(commonSettings: _*)
   .settings(noPublishSettings: _*)
   .aggregate(coreJVM, examplesJVM, coreJS, examplesJS)
 
-def previousVersion(currentVersion: String): Option[String] = {
-  val Version = """(\d+)\.(\d+)\.(\d+).*""".r
-  val Version(x, y, z) = currentVersion
-  if (z == "0") None
-  else Some(s"$x.$y.${z.toInt - 1}")
+def previousVersion(scalaVersion: String, currentVersion: String): Option[String] = {
+  if (scalaVersion == "2.13.0-RC1")
+    None
+  else {
+    val Version = """(\d+)\.(\d+)\.(\d+).*""".r
+    val Version(x, y, z) = currentVersion
+    if (z == "0") None
+    else Some(s"$x.$y.${z.toInt - 1}")
+  }
 }
 
 lazy val core = crossProject(JSPlatform, JVMPlatform, NativePlatform).crossType(CrossType.Pure)
   .settings(commonSettings: _*)
   .settings(
     moduleName := "simulacrum",
-    libraryDependencies += "org.typelevel" %% "macro-compat" % "1.1.1",
     scalacOptions in (Test) += "-Yno-imports"
   )
-  .settings(scalaMacroDependencies:_*)
+  .settings(
+    libraryDependencies ++= Seq(
+      "org.scala-lang" % "scala-reflect" % scalaVersion.value % "provided",
+      "org.scala-lang" % "scala-compiler" % scalaVersion.value % "provided"
+    )
+  )
   .nativeSettings(
     nativeCommonSettings
   )
   .platformsSettings(JVMPlatform, JSPlatform)(
-    libraryDependencies ++= scalatestSetting.value
+    libraryDependencies += scalatest.value
   )
   .platformsSettings(JSPlatform, NativePlatform)(
     excludeFilter in (Test, unmanagedSources) := "jvm.scala"
   )
   .jvmSettings(
-    mimaPreviousArtifacts := previousVersion(version.value).map { pv =>
+    mimaPreviousArtifacts := previousVersion(scalaVersion.value, version.value).map { pv =>
       organization.value % ("simulacrum" + "_" + scalaBinaryVersion.value) % pv
     }.toSet
   )
@@ -169,7 +180,7 @@ lazy val examples = crossProject(JSPlatform, JVMPlatform, NativePlatform).crossT
   .settings(moduleName := "simulacrum-examples")
   .settings(noPublishSettings: _*)
   .platformsSettings(JVMPlatform, JSPlatform)(
-    libraryDependencies ++= scalatestSetting.value
+    libraryDependencies += scalatest.value
   )
   .nativeSettings(
     nativeCommonSettings
@@ -178,26 +189,6 @@ lazy val examples = crossProject(JSPlatform, JVMPlatform, NativePlatform).crossT
 lazy val examplesJVM = examples.jvm
 lazy val examplesJS = examples.js
 lazy val examplesNative = examples.native
-
-// Base Build Settings
-lazy val scalaMacroDependencies: Seq[Setting[_]] = Seq(
-  libraryDependencies ++= Seq(
-    "org.scala-lang" % "scala-reflect" % scalaVersion.value % "provided",
-    "org.scala-lang" % "scala-compiler" % scalaVersion.value % "provided"
-  ),
-  libraryDependencies ++= {
-    CrossVersion.partialVersion(scalaVersion.value) match {
-      // if scala 2.11+ is used, quasiquotes are merged into scala-reflect
-      case Some((2, scalaMajor)) if scalaMajor >= 11 => Seq()
-      // in Scala 2.10, quasiquotes are provided by macro paradise
-      case Some((2, 10)) =>
-        Seq(
-          compilerPlugin("org.scalamacros" % "paradise" % "2.1.0" cross CrossVersion.full),
-              "org.scalamacros" %% "quasiquotes" % "2.1.0" cross CrossVersion.binary
-        )
-    }
-  }
-)
 
 lazy val noPublishSettings = Seq(
   publish := {},

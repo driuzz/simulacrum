@@ -8,16 +8,15 @@ cache:
 language: scala
 
 scala:
-  - "2.10.7"
   - "2.11.12"
-  - "2.12.7"
-  - "2.13.0-M5"
+  - "2.12.8"
+  - "2.13.0-RC1"
 
 jdk:
   - oraclejdk8
 
 script:
-  - sbt "++${TRAVIS_SCALA_VERSION}!" test mimaReportBinaryIssues
+  - sbt "++${TRAVIS_SCALA_VERSION}!" test test:doc mimaReportBinaryIssues
 
 before_cache:
   # Tricks to avoid unnecessary cache updates

@@ -4,8 +4,6 @@ import scala.annotation.{ compileTimeOnly, StaticAnnotation }
 import scala.language.experimental.macros
 import scala.reflect.macros.whitebox.Context
 
-import macrocompat._
-
 /**
  * Annotation that may be applied to methods on a type that is annotated with `@typeclass`.
  *
@@ -52,7 +50,6 @@ class typeclass(excludeParents: List[String] = Nil, generateAllOps: Boolean = tr
   def macroTransform(annottees: Any*): Any = macro TypeClassMacros.generateTypeClass
 }
 
-@bundle
 class TypeClassMacros(val c: Context) {
   import c.universe._
 
@@ -210,7 +207,7 @@ class TypeClassMacros(val c: Context) {
           //evidence for type args which are nested
           val equalityEvidences = simpleArgs.filterNot(_._4).map {
             case (arg, _, liftedTypeArg, _) =>
-              val tEq = tq"_root_.scala.Predef.<:<[${liftedTypeArg.name}, $arg]"
+              val tEq = tq"${symbolOf[_ <:< _]}[${liftedTypeArg.name}, $arg]"
               ValDef(Modifiers(Flag.IMPLICIT), TermName(c.freshName("ev")), tEq, EmptyTree)
           }
           //params to strip from method signature because they are defined on
@@ -249,9 +246,12 @@ class TypeClassMacros(val c: Context) {
     }
 
     def adaptMethods(typeClass: ClassDef, tcInstanceName: TermName, tparamName: Name, proper: Boolean, liftedTypeArgs: List[TypeDef]): List[DefDef] = {
-      val typeClassMethods = typeClass.impl.children.collect {
+      import scala.tools.nsc.ast.Trees
+      def matchMethod: PartialFunction[Tree, DefDef] = {
         case m: DefDef if !m.mods.hasFlag(Flag.PRIVATE) && !m.mods.hasFlag(Flag.PROTECTED) => m
+        case t if t.isInstanceOf[Trees#DocDef] => matchMethod(t.asInstanceOf[Trees#DocDef].definition.asInstanceOf[Tree])
       }
+      val typeClassMethods = typeClass.impl.children.collect(matchMethod)
       typeClassMethods.flatMap { method =>
         val adapted =
           if (proper) adaptMethodForProperType(tcInstanceName, tparamName, method)
